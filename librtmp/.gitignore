@@ -1,0 +1,6 @@
+*.o
+*.dylib
+librtmp.3
+librtmp.a
+librtmp.3.html
+librtmp.pc.in
