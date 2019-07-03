@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 
+// ./player 127.0.0.1 appname streamname
 int main( int argc, char **argv ) {
     if(argc<3){
         RTMP_LogPrintf("need IP APP PATH args. Ex: 127.0.0.1 app live");
@@ -46,6 +47,7 @@ int main( int argc, char **argv ) {
     r = RTMP_ConnectStream(&rtmp,0);
     fprintf(stderr, "RTMP_ConnectStream return:%d\n", r);
 
+    FILE *fp=fopen("hoge","wb");
     while(1) {
         usleep(50*1000);
         fprintf(stderr,".");
@@ -54,6 +56,10 @@ int main( int argc, char **argv ) {
         char *buffer = (char*)malloc(bufsize);
         int nr=RTMP_Read(&rtmp,buffer,bufsize);
         fprintf(stderr, "time:%u read:%d\n",nt,nr);
+        if(nr>0) {
+            fwrite(buffer,1,nr, fp);
+            fflush(fp);
+        }
     }
     
 }
