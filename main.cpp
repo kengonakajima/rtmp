@@ -2,12 +2,23 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "client.h" // moyai
+
 // need brew ffmpeg
 extern "C" {
 #include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h" 
 };
 
+GLFWwindow *g_win;
+MoyaiClient *g_moyai_client;
+Viewport *g_vp;
+const int RETINA=1;
+Layer *g_layer;
+Image *g_img;
+Texture *g_tex;
+Prop2D *g_prop;
+int g_scrw=640, g_scrh=480;
 
 static void save_gray_frame(unsigned char *buf, int wrap, int xsize, int ysize, char *filename)
 {
@@ -71,6 +82,12 @@ static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFra
 }
 
 
+void glfw_error_cb( int code, const char *desc ) {
+    print("glfw_error_cb. code:%d desc:'%s'", code, desc );
+}
+void fbsizeCallback( GLFWwindow *window, int w, int h ) {
+    print("fbsizeCallback: %d,%d",w,h);
+}
 
 // ./player 127.0.0.1 appname streamname
 int main( int argc, char **argv ) {
@@ -79,6 +96,52 @@ int main( int argc, char **argv ) {
         fprintf(stderr,"need URL\n");
         return 1;
     }
+
+    /////////////
+    if(!glfwInit()) {
+        print("can't init glfw");
+        return 1;
+    }
+    glfwSetErrorCallback( glfw_error_cb );
+
+    
+    g_win=glfwCreateWindow(g_scrw,g_scrh,"player",NULL,NULL);
+    if(!g_win) {
+        print("cant open glfw window");
+        glfwTerminate();
+        return 1;
+    }
+    glfwMakeContextCurrent(g_win);
+    glfwSwapInterval(1);
+    glClearColor(0,0,0,1);
+
+    glfwSetFramebufferSizeCallback(g_win, fbsizeCallback);
+
+    
+    g_moyai_client = new MoyaiClient(g_win,g_scrw,g_scrh);
+    g_vp=new Viewport();
+    g_vp->setSize(g_scrw*RETINA,g_scrh*RETINA);
+    g_vp->setScale2D(g_scrw,g_scrh);
+
+    g_layer=new Layer();
+    g_layer->setViewport(g_vp);
+    g_moyai_client->insertLayer(g_layer);
+    
+
+    g_img=new Image();
+    g_img->setSize(g_scrw,g_scrh);
+    g_img->drawLine(0,0,g_scrw,g_scrh,Color(1,0,0,1));
+    g_tex=new Texture();
+    g_tex->setImage(g_img);
+    g_prop=new Prop2D();
+    g_prop->setTexture(g_tex);
+    g_prop->setScl(g_scrw,g_scrh);
+    g_prop->setLoc(0,0);
+    g_layer->insertProp(g_prop);
+
+    
+    /////////////
+    
     av_register_all();
     avformat_network_init();
     
@@ -166,8 +229,14 @@ int main( int argc, char **argv ) {
         return 1;
     }
 
-    int how_many_packets_to_process=8;
+    int how_many_packets_to_process=30;
     while (av_read_frame(pFormatContext, pPacket) >= 0) {
+
+        glfwPollEvents();
+        g_moyai_client->render();
+        glfwSwapBuffers(g_win);
+        glFlush();
+        
         // if it's the video stream
         if (pPacket->stream_index == videoindex) {
             fprintf(stderr,"AVPacket->pts %" PRId64 "\n", pPacket->pts);
