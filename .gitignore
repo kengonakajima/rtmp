@@ -1,2 +1,6 @@
 *.o
 player
+from_rtmpdump
+.DS_Store
+*.dSYM
+*.pgm

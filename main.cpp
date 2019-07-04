@@ -1,5 +1,3 @@
-#include "librtmp/rtmp.h"
-#include "librtmp/log.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -54,7 +52,7 @@ static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFra
                     pCodecContext->frame_number,
                     av_get_picture_type_char(pFrame->pict_type),
                     pFrame->pkt_size,
-                    pFrame->pts,
+                    (int)pFrame->pts,
                     pFrame->key_frame,
                     pFrame->coded_picture_number,
                     pFrame->format // AV_PIX_FMT_YUV420P = 0
@@ -76,17 +74,11 @@ static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFra
 
 // ./player 127.0.0.1 appname streamname
 int main( int argc, char **argv ) {
-    if(argc<3){
-        RTMP_LogPrintf("need IP APP PATH args. Ex: 127.0.0.1 app live");
+    char *url=argv[1];
+    if(!url) {
+        fprintf(stderr,"need URL\n");
         return 1;
     }
-    char *iparg=argv[1];
-    char *apparg=argv[2];
-    char *playpatharg=argv[3];
-
-    
-    // decoder
-
     av_register_all();
     avformat_network_init();
     
@@ -96,9 +88,9 @@ int main( int argc, char **argv ) {
         fprintf(stderr,"fatal\n");
         return 1;
     }
-    char input[]="hoge.mov";
-    char inputrtmp[]="rtmp://139.162.118.45/app/live";
-    if(avformat_open_input(&pFormatContext, inputrtmp, NULL, NULL) != 0) { // blocks if no stream live
+
+
+    if(avformat_open_input(&pFormatContext, url, NULL, NULL) != 0) { // blocks if no stream live
         fprintf(stderr,"avformat_open_input failed\n");
         return 1;
     }
@@ -110,7 +102,7 @@ int main( int argc, char **argv ) {
     }
     fprintf(stderr,"avformat_find_stream_info ok\n"); 
 
-    av_dump_format(pFormatContext,0,input,0);
+    av_dump_format(pFormatContext,0,url,0);
 
     AVCodec *pCodec = NULL;
     AVCodecParameters *pCodecParameters =  NULL;
@@ -195,56 +187,5 @@ int main( int argc, char **argv ) {
     avcodec_free_context(&pCodecContext);
     
     fprintf(stderr,"end\n");
-    
-    exit(0);
-
-    // network
-    RTMP_LogPrintf( "start. host:%s\n", argv[1]);
-    RTMP rtmp={0};
-    RTMP_Init(&rtmp);
-    RTMP_debuglevel = RTMP_LOGDEBUG;
-    AVal hostname={ argv[1], strlen(argv[1]) };
-    AVal sockshost={ 0, 0 };
-    AVal playpath={playpatharg,strlen(playpatharg)};
-    char url[1024];
-    snprintf(url,sizeof(url), "rtmp://%s/%s", iparg, apparg);
-    AVal tcUrl={ url, strlen(url) };
-    AVal swfUrl={0,0};
-    AVal pageUrl={0,0};
-    AVal app={apparg,strlen(apparg)};
-    AVal auth={0,0};
-    AVal swfHash={0,0};
-    AVal flashVer={0,0};
-    AVal subscribepath={0,0};
-    AVal usherToken={0,0};
-    RTMP_SetupStream(&rtmp, RTMP_PROTOCOL_RTMP, &hostname, 1935, &sockshost, &playpath, &tcUrl,
-                     &swfUrl, &pageUrl, &app, &auth, &swfHash, 0,
-                     &flashVer, &subscribepath, &usherToken, 0, 0, false, 30
-                     );
-
-
-    int r=RTMP_Connect(&rtmp,NULL);
-    fprintf(stderr, "RTMP_Connect return:%d\n", r);
-    if(!r) {
-        fprintf(stderr, "fatal, quit\n");
-        exit(1);
-    }
-    r = RTMP_ConnectStream(&rtmp,0);
-    fprintf(stderr, "RTMP_ConnectStream return:%d\n", r);
-
-    FILE *fp=fopen("hoge","wb");
-    while(1) {
-        usleep(50*1000);
-        fprintf(stderr,".");
-        unsigned int nt=RTMP_GetTime();
-        size_t bufsize = 64*1024;
-        char *buffer = (char*)malloc(bufsize);
-        int nr=RTMP_Read(&rtmp,buffer,bufsize);
-        fprintf(stderr, "time:%u read:%d\n",nt,nr);
-        if(nr>0) {
-            fwrite(buffer,1,nr, fp);
-            fflush(fp);
-        }
-    }
     
 }

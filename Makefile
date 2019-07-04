@@ -7,12 +7,11 @@ OPENCORELIBS=/usr/local/Cellar/opencore-amr/0.1.5/lib/libopencore-amrnb.a /usr/l
 ETCLIBS=/usr/local/Cellar/aom/1.0.0/lib/libaom.a /usr/local/Cellar/libbluray/1.1.0/lib/libbluray.a /usr/local/Cellar/freetype/2.10.0/lib/libfreetype.a /usr/local/Cellar/fontconfig/2.13.1/lib/libfontconfig.a /usr/local/Cellar/expat/2.2.7/lib/libexpat.a /usr/local/Cellar/gnutls/3.6.7.1/lib/libgnutls.dylib -liconv /usr/local/Cellar/lame/3.100/lib/libmp3lame.a -llzma /usr/local/Cellar/openjpeg/2.3.1/lib/libopenjp2.a /usr/local/Cellar/opus/1.3/lib/libopus.a -lpng -lsnappy -lspeex 
 
 
+all: player from_rtmpdump
 
 player : main.o
-	g++ -g -o player main.o librtmp/librtmp.a $(OPENSSLLIBS) -lz $(FFMPEGLIBS) $(FRAMEWORKS) $(OPENCORELIBS) $(ETCLIBS)
+	g++ -g -o player main.cpp librtmp/librtmp.a $(OPENSSLLIBS) -lz $(FFMPEGLIBS) $(FRAMEWORKS) $(OPENCORELIBS) $(ETCLIBS)
 
-
-
-main.o : main.cpp
-	g++ -g -c main.cpp 
+from_rtmpdump : from_rtmpdump.cpp
+	g++ -g -o from_rtmpdump from_rtmpdump.cpp librtmp/librtmp.a $(OPENSSLLIBS)  -lz
 
