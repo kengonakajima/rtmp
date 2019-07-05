@@ -127,8 +127,13 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
             int chn= av_get_channel_layout_nb_channels(pFrame->channel_layout);
             float lmax=0, rmax=0;
             for(int i=0;i<pFrame->nb_samples;i++) {
-                float lv=((float*)pFrame->data[0])[i];
-                float rv=((float*)pFrame->data[1])[i];
+                float lv=0,rv=0;
+                if( pFrame->format==AV_SAMPLE_FMT_FLTP ) {
+                    lv=((float*)pFrame->data[0])[i];
+                    rv=((float*)pFrame->data[1])[i];
+                } else {
+                    print("invalid sample format:%s",av_get_sample_fmt_name((AVSampleFormat)pFrame->format));
+                }
                 if(lv>lmax)lmax=lv;
                 if(rv>rmax)rmax=rv;
             }
