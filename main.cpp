@@ -32,7 +32,10 @@ unsigned char g_picture_data[g_scrw*g_scrh*4];
 int g_frame_num;
 
 SoundSystem *g_soundsystem;
-
+const int ABUFNUM=64, ABUFLEN=1024;
+ALuint g_alsource;
+ALuint g_albuffer[ABUFNUM];
+int16_t g_pcmdata[ABUFNUM][ABUFLEN];
 
 struct SwsContext *g_swsctx;
 
@@ -143,15 +146,56 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
                 if(lv>lmax)lmax=lv;
                 if(rv>rmax)rmax=rv;
             }
-#if 0
-            print("AFrame %d size:%d chn:%d fmt:%s samples:%d lmax:%f rmax:%f",
+
+            static int buf_head=0; // ringbuffer head index
+            int buf_ind=buf_head % ABUFNUM;
+            static int play_head=0;
+
+            
+#if 1
+            char llvch,rlvch;
+            if(lmax<0.02) llvch='.'; else if(lmax<0.04)llvch=':'; else llvch='*';
+            if(rmax<0.02) rlvch='.'; else if(rmax<0.04)rlvch=':'; else rlvch='*';
+            
+            print("AFrm %d sz:%d ch:%d fmt:%s nsmpl:%d llv:%c rlv:%c bi:%d ph:%d(%d)",
                   aCodecContext->frame_number, pFrame->pkt_size, chn,
                   av_get_sample_fmt_name((AVSampleFormat)pFrame->format), // AV_SAMPLE_FMT_FLTP : OBS uses this
                   pFrame->nb_samples,
-                  lmax, rmax
+                  llvch,rlvch,
+                  buf_ind,
+                  play_head,
+                  play_head % ABUFNUM
                   );
 #endif            
-            
+
+            int samplenum=pFrame->nb_samples;
+            if(samplenum>ABUFLEN) samplenum=ABUFLEN;
+            for(int i=0;i<samplenum;i++) {
+                float left_level=((float*)pFrame->data[0])[i]; // TODO: stereo
+                int amp=3;
+                g_pcmdata[buf_ind][i]=left_level * 30000 * amp;
+                //                g_pcmdata[buf_ind][i]=(i%50)*100;
+            }
+            buf_head++;
+            print("hoge %d", g_pcmdata[buf_ind][0]);
+            ALint proced;
+            alGetSourcei(g_alsource, AL_BUFFERS_PROCESSED, &proced)        ;
+            if(proced>0) {
+                prt("proced:%d ",proced);
+                for(int j=0;j<proced;j++) {
+                    int ind = play_head % ABUFNUM;
+                    alSourceUnqueueBuffers(g_alsource,1,&g_albuffer[ind]);
+                    alBufferData(g_albuffer[ind], AL_FORMAT_MONO16, g_pcmdata[ind], samplenum*sizeof(int16_t),44100);
+                    alSourceQueueBuffers(g_alsource, 1, &g_albuffer[ind]);
+                    play_head++;
+                }
+            }
+            ALint sst;
+            alGetSourcei(g_alsource, AL_SOURCE_STATE, &sst);
+            if(sst==AL_STOPPED) {
+                alSourcePlay(g_alsource);
+                print("play");
+            }
         }
         
     }
@@ -174,53 +218,6 @@ void keyboardCallback( GLFWwindow *window, int key, int scancode, int action, in
     }
 }
 
-void *audioThreadFunc(void *arg) {
-
-    g_soundsystem = new SoundSystem();
-    
-    // audio streaming
-    
-    ALuint alsource;
-    ALuint albuffer[4];
-
-    alGenBuffers(4, albuffer);
-    alGenSources(1,&alsource);
-
-
-    const int N=1;
-    int16_t pcmdata[4][4410*N];
-    for(int i=0;i<4410*N;i++)pcmdata[0][i] = (i%100)*100;
-    for(int i=0;i<4410*N;i++)pcmdata[1][i] = (i%50)*200;
-    for(int i=0;i<4410*N;i++)pcmdata[2][i] = (i%130)*130;
-    for(int i=0;i<4410*N;i++)pcmdata[3][i] = (i%90)*150;        
-    alBufferData(albuffer[0], AL_FORMAT_MONO16, pcmdata[0], 4410*N*sizeof(int16_t), 44100);
-    alBufferData(albuffer[1], AL_FORMAT_MONO16, pcmdata[1], 4410*N*sizeof(int16_t), 44100);
-    alBufferData(albuffer[2], AL_FORMAT_MONO16, pcmdata[2], 4410*N*sizeof(int16_t), 44100);
-    alBufferData(albuffer[3], AL_FORMAT_MONO16, pcmdata[3], 4410*N*sizeof(int16_t), 44100);        
-    alSourceQueueBuffers(alsource,1,&albuffer[0]);
-    alSourceQueueBuffers(alsource,1,&albuffer[1]);
-    alSourceQueueBuffers(alsource,1,&albuffer[2]);
-    alSourceQueueBuffers(alsource,1,&albuffer[3]);        
-    alSourcePlay(alsource);
-
-    while(1) {
-        usleep(10);
-        static int nbufproced=0;
-        ALint proced;
-        alGetSourcei(alsource, AL_BUFFERS_PROCESSED, &proced)        ;
-        if(proced>0) {
-            if(proced>1)assertmsg(false,"toobig");
-            int ind = nbufproced % 4;
-            alSourceUnqueueBuffers(alsource,1,&albuffer[ind]);
-            alBufferData(albuffer[ind], AL_FORMAT_MONO16, pcmdata[ind], 4410*N*sizeof(int16_t),44100);            
-            alSourceQueueBuffers(alsource, 1, &albuffer[ind]);
-            nbufproced++;
-        }
-    }
-
-        
-    return 0;   
-}
 void *receiveRTMPThreadFunc(void *urlarg) {
     char *url=(char*)urlarg;
     print("receiveRTMPThreadFunc: url:'%s'",url);
@@ -259,6 +256,23 @@ void *receiveRTMPThreadFunc(void *urlarg) {
         return 0;
     }
 
+
+    // audio streaming
+    g_soundsystem = new SoundSystem();
+
+
+    alGenBuffers(ABUFNUM,g_albuffer);
+    alGenSources(1,&g_alsource);
+
+    for(int j=0;j<ABUFNUM;j++) {
+        for(int i=0;i<ABUFLEN;i++) g_pcmdata[j][i] = (i%(50+j*2))*200;
+    }
+    for(int i=0;i<ABUFNUM;i++) {
+        alBufferData(g_albuffer[i], AL_FORMAT_MONO16, g_pcmdata[i], ABUFLEN*sizeof(int16_t), 44100);
+        alSourceQueueBuffers(g_alsource,1,&g_albuffer[i]);
+    }
+    alSourcePlay(g_alsource);
+    
     /////
     AVCodec *aCodec = NULL;
     AVCodec *pCodec = NULL;
@@ -436,13 +450,14 @@ int main( int argc, char **argv ) {
         print("pthread_create failed. ret:%d",err);
         return 1;
     }
-
+#if 0
     pthread_t audio_tid;
     err = pthread_create(&audio_tid,NULL, audioThreadFunc, NULL);
     if(err) {
         print("pthread_create failed for audio. ret:%d",err);
         return 1;
     }
+#endif    
     //////////////
 
     int frm=0,totfrm=0;
