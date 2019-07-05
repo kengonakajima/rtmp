@@ -32,7 +32,7 @@ unsigned char g_picture_data[g_scrw*g_scrh*4];
 int g_frame_num;
 
 SoundSystem *g_soundsystem;
-const int ABUFNUM=64, ABUFLEN=1024;
+const int ABUFNUM=64, ABUFLEN=1024; // bufnum増やすと遅れが増えるが、ずれてるだけかなあ
 ALuint g_alsource;
 ALuint g_albuffer[ABUFNUM];
 int16_t g_pcmdata[ABUFNUM][ABUFLEN];
@@ -157,14 +157,15 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
             if(lmax<0.02) llvch='.'; else if(lmax<0.04)llvch=':'; else llvch='*';
             if(rmax<0.02) rlvch='.'; else if(rmax<0.04)rlvch=':'; else rlvch='*';
             
-            print("AFrm %d sz:%d ch:%d fmt:%s nsmpl:%d llv:%c rlv:%c bi:%d ph:%d(%d)",
+            print("AFrm %d sz:%d ch:%d fmt:%s nsmpl:%d llv:%c rlv:%c bi:%d ph:%d(%d) diff:%d",
                   aCodecContext->frame_number, pFrame->pkt_size, chn,
                   av_get_sample_fmt_name((AVSampleFormat)pFrame->format), // AV_SAMPLE_FMT_FLTP : OBS uses this
                   pFrame->nb_samples,
                   llvch,rlvch,
                   buf_ind,
                   play_head,
-                  play_head % ABUFNUM
+                  play_head % ABUFNUM,
+                  buf_head - play_head
                   );
 #endif            
 
@@ -177,7 +178,6 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
                 //                g_pcmdata[buf_ind][i]=(i%50)*100;
             }
             buf_head++;
-            print("hoge %d", g_pcmdata[buf_ind][0]);
             ALint proced;
             alGetSourcei(g_alsource, AL_BUFFERS_PROCESSED, &proced)        ;
             if(proced>0) {
