@@ -187,14 +187,16 @@ void *audioThreadFunc(void *arg) {
     alGenSources(1,&alsource);
 
 
-    const int N=4;
-    int16_t pcmdata[4410*4], pcmdata2[4410*4];
-    for(int i=0;i<4410*4;i++)pcmdata[i] = (i%100)*100;
-    for(int i=0;i<4410*4;i++)pcmdata2[i] = (i%50)*50;    
-    alBufferData(albuffer[0], AL_FORMAT_MONO16, pcmdata, 4410*N*sizeof(int16_t), 44100);
-    alBufferData(albuffer[1], AL_FORMAT_MONO16, pcmdata2, 4410*N*sizeof(int16_t), 44100);
-    alBufferData(albuffer[2], AL_FORMAT_MONO16, pcmdata, 4410*N*sizeof(int16_t), 44100);
-    alBufferData(albuffer[3], AL_FORMAT_MONO16, pcmdata2, 4410*N*sizeof(int16_t), 44100);        
+    const int N=1;
+    int16_t pcmdata[4][4410*N];
+    for(int i=0;i<4410*N;i++)pcmdata[0][i] = (i%100)*100;
+    for(int i=0;i<4410*N;i++)pcmdata[1][i] = (i%50)*200;
+    for(int i=0;i<4410*N;i++)pcmdata[2][i] = (i%130)*130;
+    for(int i=0;i<4410*N;i++)pcmdata[3][i] = (i%90)*150;        
+    alBufferData(albuffer[0], AL_FORMAT_MONO16, pcmdata[0], 4410*N*sizeof(int16_t), 44100);
+    alBufferData(albuffer[1], AL_FORMAT_MONO16, pcmdata[1], 4410*N*sizeof(int16_t), 44100);
+    alBufferData(albuffer[2], AL_FORMAT_MONO16, pcmdata[2], 4410*N*sizeof(int16_t), 44100);
+    alBufferData(albuffer[3], AL_FORMAT_MONO16, pcmdata[3], 4410*N*sizeof(int16_t), 44100);        
     alSourceQueueBuffers(alsource,1,&albuffer[0]);
     alSourceQueueBuffers(alsource,1,&albuffer[1]);
     alSourceQueueBuffers(alsource,1,&albuffer[2]);
@@ -211,7 +213,7 @@ void *audioThreadFunc(void *arg) {
             if(proced>1)assertmsg(false,"toobig");
             int ind = nbufproced % 4;
             alSourceUnqueueBuffers(alsource,1,&albuffer[ind]);
-            alBufferData(albuffer[ind], AL_FORMAT_MONO16, pcmdata, 4410*N*sizeof(int16_t),44100);            
+            alBufferData(albuffer[ind], AL_FORMAT_MONO16, pcmdata[ind], 4410*N*sizeof(int16_t),44100);            
             alSourceQueueBuffers(alsource, 1, &albuffer[ind]);
             nbufproced++;
             
