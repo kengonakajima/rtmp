@@ -19,20 +19,32 @@ Image *g_img;
 Texture *g_tex;
 Prop2D *g_prop;
 int g_scrw=640, g_scrh=480;
+bool g_game_done=false;
 
 static void save_gray_frame(unsigned char *buf, int wrap, int xsize, int ysize, char *filename)
 {
-    FILE *f;
-    int i;
-    f = fopen(filename,"w");
+    
+    //    FILE *f = fopen(filename,"w");
     // writing the minimal required header for a pgm file format
     // portable graymap format -> https://en.wikipedia.org/wiki/Netpbm_format#PGM_example
-    fprintf(f, "P5\n%d %d\n%d\n", xsize, ysize, 255);
+    //    fprintf(f, "P5\n%d %d\n%d\n", xsize, ysize, 255);
 
     // writing line by line
-    for (i = 0; i < ysize; i++)
-        fwrite(buf + i * wrap, 1, xsize, f);
-    fclose(f);
+    //    for (int i = 0; i < ysize; i++) fwrite(buf + i * wrap, 1, xsize, f);
+    //    fclose(f);
+    
+    int w=xsize, h=ysize;
+    if(w>g_img->width) w=g_img->width;
+    if(h>g_img->height) h=g_img->height;
+    print("w:%d h:%d",w,h);
+    for(int y=0;y<h;y++) {
+        for(int x=0;x<w;x++) {
+            uint8_t r,g,b,a=0xff;
+            r=g=b= buf[x+y*wrap];
+            g_img->setPixelRaw(x,y,r,g,b,a);
+        }
+    }
+    g_tex->setImage(g_img);
 }
 
 static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFrame *pFrame)
@@ -89,6 +101,12 @@ void fbsizeCallback( GLFWwindow *window, int w, int h ) {
     print("fbsizeCallback: %d,%d",w,h);
 }
 
+void keyboardCallback( GLFWwindow *window, int key, int scancode, int action, int mods ) {
+    if(action && key == 'Q') {
+        g_game_done=true;
+    }
+}
+
 // ./player 127.0.0.1 appname streamname
 int main( int argc, char **argv ) {
     char *url=argv[1];
@@ -116,6 +134,7 @@ int main( int argc, char **argv ) {
     glClearColor(0,0,0,1);
 
     glfwSetFramebufferSizeCallback(g_win, fbsizeCallback);
+    glfwSetKeyCallback( g_win, keyboardCallback );
 
     
     g_moyai_client = new MoyaiClient(g_win,g_scrw,g_scrh);
@@ -229,7 +248,6 @@ int main( int argc, char **argv ) {
         return 1;
     }
 
-    int how_many_packets_to_process=30;
     while (av_read_frame(pFormatContext, pPacket) >= 0) {
 
         glfwPollEvents();
@@ -243,9 +261,10 @@ int main( int argc, char **argv ) {
             int response = decode_packet(pPacket, pCodecContext, pFrame);
             if (response < 0) break;
             // stop it, otherwise we'll be saving hundreds of frames
-            if (--how_many_packets_to_process <= 0) break;
         }
         av_packet_unref(pPacket);
+
+        if(g_game_done)break;
     }
 
     fprintf(stderr,"releasing all the resources\n");
