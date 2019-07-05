@@ -1,6 +1,6 @@
 #FFMPEG=../ffmpeg-4.1.3
 OPENSSLLIBS=/usr/local/Cellar/openssl/1.0.2r/lib/libssl.a /usr/local/Cellar/openssl/1.0.2r/lib/libcrypto.a
-FFMPEGLIBS=/usr/local/Cellar/ffmpeg/4.1.3/lib/libavcodec.a /usr/local/Cellar/ffmpeg/4.1.3/lib/libavformat.a /usr/local/Cellar/ffmpeg/4.1.3/lib/libavutil.a /usr/local/Cellar/ffmpeg/4.1.3/lib/libswresample.a -lsoxr -ltheora -lvorbisenc -lvorbisfile -lvorbis -lvpx -lx264 -lx265 -lxml2  /usr/local/Cellar/xvid/1.3.5/lib/libxvidcore.a
+FFMPEGLIBS=/usr/local/Cellar/ffmpeg/4.1.3/lib/libavcodec.a /usr/local/Cellar/ffmpeg/4.1.3/lib/libavformat.a /usr/local/Cellar/ffmpeg/4.1.3/lib/libavutil.a /usr/local/Cellar/ffmpeg/4.1.3/lib/libswresample.a /usr/local/Cellar/ffmpeg/4.1.3/lib/libswscale.a -lsoxr -ltheora -lvorbisenc -lvorbisfile -lvorbis -lvpx -lx264 -lx265 -lxml2  /usr/local/Cellar/xvid/1.3.5/lib/libxvidcore.a
 AVFRAMEWORKS=-framework AudioToolbox -lbz2 -framework CoreMedia -framework VideoToolbox
 FRAMEWORKS=-framework IOKit -framework OpenGL -framework CoreFoundation -framework CoreVideo -m64  -L/usr/local/lib -framework OpenAL -framework AppKit -framework CoreGraphics $(AVFRAMEWORKS)
 OPENCORELIBS=/usr/local/Cellar/opencore-amr/0.1.5/lib/libopencore-amrnb.a /usr/local/Cellar/opencore-amr/0.1.5/lib/libopencore-amrwb.a

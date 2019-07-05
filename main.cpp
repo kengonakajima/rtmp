@@ -9,7 +9,8 @@
 // need brew ffmpeg
 extern "C" {
 #include "libavcodec/avcodec.h"
-#include "libavformat/avformat.h" 
+#include "libavformat/avformat.h"
+#include "libswscale/swscale.h"
 };
 
 GLFWwindow *g_win;
@@ -25,6 +26,9 @@ bool g_game_done=false;
 
 unsigned char g_picture_data[g_scrw*g_scrh*4];
 int g_frame_num;
+
+
+struct SwsContext *g_swsctx;
 
 
 static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFrame *pFrame)
@@ -75,8 +79,15 @@ static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFra
             int h=pFrame->height;
             int g_frame_num=pCodecContext->frame_number;
 
-            //                        print("LSZ:%d %d %d w:%d h:%d", ylinesize, ulinesize, vlinesize, w, h);
+            //            static unsigned char outbuf[g_scrw*g_scrh*3];
+            unsigned char *outptrs[1]= { g_picture_data };
+            int outlinesizes[1] = { g_scrw*4 };
+
+            int swsret=sws_scale(g_swsctx, pFrame->data, pFrame->linesize, 0, pFrame->height, outptrs, outlinesizes );
+            if(swsret<=0) print("swsret:%d",swsret);
             
+            //                        print("LSZ:%d %d %d w:%d h:%d", ylinesize, ulinesize, vlinesize, w, h);
+#if 0            
             if(h>g_scrh)h=g_scrh;
             if(w>g_scrw)w=g_scrw;
 
@@ -84,12 +95,16 @@ static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFra
             for(int y=0;y<h;y++) {
                 for(int x=0;x<w;x++) {
                     int ind = (x+y*w)*4;
-                    g_picture_data[ind]=ydata[x+y*ylinesize];
-                    g_picture_data[ind+1]=ydata[x+y*ylinesize];
-                    g_picture_data[ind+2]=ydata[x+y*ylinesize];
+                    //                    g_picture_data[ind]=ydata[x+y*ylinesize];
+                    //                    g_picture_data[ind+1]=ydata[x+y*ylinesize];
+                    //                    g_picture_data[ind+2]=ydata[x+y*ylinesize];
+                    g_picture_data[ind+0]=outbuf[(x+y*g_scrw)*3];
+                    g_picture_data[ind+1]=outbuf[(x+y*g_scrw)*3+1];
+                    g_picture_data[ind+2]=outbuf[(x+y*g_scrw)*3+2];
                     g_picture_data[ind+3]=0xff;
                 }
             }
+#endif            
         }
     }
     return 0;
@@ -130,13 +145,25 @@ void *receiveRTMPThreadFunc(void *urlarg) {
     fprintf(stderr,"avformat_open_input ok\n");
 
     if(avformat_find_stream_info(pFormatContext,  NULL) < 0) {
-        fprintf(stderr,"avformat_find_stream_info failed\n");
+        printf("avformat_find_stream_info failed");
         return 0;
     }
-    fprintf(stderr,"avformat_find_stream_info ok\n"); 
+    print("avformat_find_stream_info ok"); 
 
     av_dump_format(pFormatContext,0,url,0);
 
+    /////
+    g_swsctx=sws_getContext( g_scrw, g_scrh, AV_PIX_FMT_YUV420P,
+                             g_scrw, g_scrh, AV_PIX_FMT_RGB32,
+                             SWS_BICUBIC,
+                             NULL,NULL,NULL);
+    if(!g_swsctx) {
+        print("sws_getContext failed");
+        return 0;
+    }
+
+    /////
+    
     AVCodec *pCodec = NULL;
     AVCodecParameters *pCodecParameters =  NULL;
     
