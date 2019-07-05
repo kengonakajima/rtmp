@@ -31,14 +31,14 @@ int g_frame_num;
 struct SwsContext *g_swsctx;
 
 
-static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFrame *pFrame)
+static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFrame *pFrame)
 {
     // Supply raw packet data as input to a decoder
     // https://ffmpeg.org/doxygen/trunk/group__lavc__decoding.html#ga58bc4bf1e0ac59e27362597e467efff3
     int response = avcodec_send_packet(pCodecContext, pPacket);
 
     if (response < 0) {
-        fprintf(stderr,"Error while sending a packet to the decoder: %s\n", av_err2str(response));
+        print("Error while sending a packet to the decoder: %s", av_err2str(response));
         return response;
     }
 
@@ -49,7 +49,7 @@ static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFra
         if (response == AVERROR(EAGAIN) || response == AVERROR_EOF) {
             break;
         } else if (response < 0) {
-            fprintf(stderr,"Error while receiving a frame from the decoder: %s\n", av_err2str(response));
+            printf("Error while receiving a frame from the decoder: %s", av_err2str(response));
             return response;
         }
 
@@ -109,6 +109,43 @@ static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFra
     }
     return 0;
 }
+static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext, AVFrame *pFrame ) {
+    int response = avcodec_send_packet(aCodecContext,pPacket)    ;
+    if(response<0) {
+        print("avcodec_send_packet failed audio");
+        return response;
+    }
+    while(response>=0) {
+        response=avcodec_receive_frame(aCodecContext,pFrame);
+        if( response == AVERROR(EAGAIN) || response == AVERROR_EOF ) {
+            break;
+        } else if( response < 0) {
+            print("error receiving audio decoded data: %s", av_err2str(response));
+            return response;
+        }
+        if(response>=0) {
+            int chn= av_get_channel_layout_nb_channels(pFrame->channel_layout);
+            float lmax=0, rmax=0;
+            for(int i=0;i<pFrame->nb_samples;i++) {
+                float lv=((float*)pFrame->data[0])[i];
+                float rv=((float*)pFrame->data[1])[i];
+                if(lv>lmax)lmax=lv;
+                if(rv>rmax)rmax=rv;
+            }
+            print("AFrame %d size:%d chn:%d fmt:%s samples:%d lmax:%f rmax:%f",
+                  aCodecContext->frame_number, pFrame->pkt_size, chn,
+                  av_get_sample_fmt_name((AVSampleFormat)pFrame->format), // AV_SAMPLE_FMT_FLTP : OBS uses this
+                  pFrame->nb_samples,
+                  lmax, rmax
+                  );
+            
+        }
+        
+    }
+    return 0;
+}
+    
+
 
 
 void glfw_error_cb( int code, const char *desc ) {
@@ -163,11 +200,11 @@ void *receiveRTMPThreadFunc(void *urlarg) {
     }
 
     /////
-    
+    AVCodec *aCodec = NULL;
     AVCodec *pCodec = NULL;
     AVCodecParameters *pCodecParameters =  NULL;
     
-    int videoindex=-1;
+    int videoindex=-1, audioindex=-1;    
     for(int i=0;i<pFormatContext->nb_streams;i++) {
         AVCodecParameters *pLocalCodecParameters =  NULL;
         pLocalCodecParameters = pFormatContext->streams[i]->codecpar;
@@ -185,7 +222,7 @@ void *receiveRTMPThreadFunc(void *urlarg) {
         if (pLocalCodecParameters->codec_type == AVMEDIA_TYPE_VIDEO) {
             if(videoindex==-1) {
                 videoindex = i;
-                fprintf(stderr,"videoindex:%d\n",videoindex);
+                print("videoindex:%d",videoindex);
                 pCodec = pLocalCodec;
                 pCodecParameters = pLocalCodecParameters;
                 
@@ -193,6 +230,11 @@ void *receiveRTMPThreadFunc(void *urlarg) {
             fprintf(stderr,"Video Codec: resolution %d x %d\n", pLocalCodecParameters->width, pLocalCodecParameters->height);
         } else if (pLocalCodecParameters->codec_type == AVMEDIA_TYPE_AUDIO) {
             fprintf(stderr,"Audio Codec: %d channels, sample rate %d\n", pLocalCodecParameters->channels, pLocalCodecParameters->sample_rate);
+            if(audioindex==-1) {
+                audioindex = i;
+                aCodec = avcodec_find_decoder(pFormatContext->streams[audioindex]->codec->codec_id);
+                print("audioindex:%d, aCodec:%p",audioindex, aCodec);
+            }
             
         }
         fprintf(stderr,"\tCodec %s ID %d bit_rate %lld\n", pLocalCodec->name, pLocalCodec->id, pLocalCodecParameters->bit_rate);
@@ -200,9 +242,19 @@ void *receiveRTMPThreadFunc(void *urlarg) {
 
     AVCodecContext *pCodecContext = avcodec_alloc_context3(pCodec);
     if (!pCodecContext) {
-        fprintf(stderr,"failed to allocated memory for AVCodecContext\n");
+        print("failed to allocated memory for AVCodecContext video");
         return 0;
     }
+    AVCodecContext *aCodecContext = avcodec_alloc_context3(aCodec);
+    if(!aCodecContext) {
+        print("failed to allocated memory for AVCodecContext audio");
+        return 0;
+    }
+    if(avcodec_copy_context(aCodecContext, pFormatContext->streams[audioindex]->codec) != 0 ) {
+        print("cant copy audio codec context");
+        return 0;
+    }
+    print("audio stream info: freq:%d channels:%d", aCodecContext->sample_rate, aCodecContext->channels);
 
 
     if (avcodec_parameters_to_context(pCodecContext, pCodecParameters) < 0) {
@@ -211,7 +263,11 @@ void *receiveRTMPThreadFunc(void *urlarg) {
     }
 
     if (avcodec_open2(pCodecContext, pCodec, NULL) < 0) {
-        fprintf(stderr,"failed to open codec through avcodec_open2\n");
+        print("failed to open video codec through avcodec_open2");
+        return 0;
+    }
+    if( avcodec_open2(aCodecContext, aCodec, NULL) < 0) {
+        print("failed to open audio codec ")   ;
         return 0;
     }
 
@@ -230,9 +286,12 @@ void *receiveRTMPThreadFunc(void *urlarg) {
         // if it's the video stream
         if (pPacket->stream_index == videoindex) {
             //            fprintf(stderr,"AVPacket->pts %" PRId64 "\n", pPacket->pts);
-            int response = decode_packet(pPacket, pCodecContext, pFrame);
+            int response = decode_video_packet(pPacket, pCodecContext, pFrame);
             if (response < 0) break;
             // stop it, otherwise we'll be saving hundreds of frames
+        } else if( pPacket->stream_index == audioindex) {
+            int response = decode_audio_packet(pPacket, aCodecContext, pFrame);
+            if( response<0) break;
         }
         av_packet_unref(pPacket);
     }
