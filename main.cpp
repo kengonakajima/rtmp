@@ -174,6 +174,59 @@ void keyboardCallback( GLFWwindow *window, int key, int scancode, int action, in
     }
 }
 
+void *audioThreadFunc(void *arg) {
+
+    g_soundsystem = new SoundSystem();
+    
+    // audio streaming
+    
+    ALuint alsource;
+    ALuint albuffer[4];
+
+    alGenBuffers(4, albuffer);
+    alGenSources(1,&alsource);
+
+
+    const int N=4;
+    int16_t pcmdata[4410*4], pcmdata2[4410*4];
+    for(int i=0;i<4410*4;i++)pcmdata[i] = (i%100)*100;
+    for(int i=0;i<4410*4;i++)pcmdata2[i] = (i%50)*50;    
+    alBufferData(albuffer[0], AL_FORMAT_MONO16, pcmdata, 4410*N*sizeof(int16_t), 44100);
+    alBufferData(albuffer[1], AL_FORMAT_MONO16, pcmdata2, 4410*N*sizeof(int16_t), 44100);
+    alBufferData(albuffer[2], AL_FORMAT_MONO16, pcmdata, 4410*N*sizeof(int16_t), 44100);
+    alBufferData(albuffer[3], AL_FORMAT_MONO16, pcmdata2, 4410*N*sizeof(int16_t), 44100);        
+    alSourceQueueBuffers(alsource,1,&albuffer[0]);
+    alSourceQueueBuffers(alsource,1,&albuffer[1]);
+    alSourceQueueBuffers(alsource,1,&albuffer[2]);
+    alSourceQueueBuffers(alsource,1,&albuffer[3]);        
+    alSourcePlay(alsource);
+
+    while(1) {
+        usleep(10);
+        static int nbufproced=0;
+        ALint proced;
+        alGetSourcei(alsource, AL_BUFFERS_PROCESSED, &proced)        ;
+        if(proced>0) {
+            prt("%d ",proced);
+            if(proced>1)assertmsg(false,"toobig");
+            int ind = nbufproced % 4;
+            alSourceUnqueueBuffers(alsource,1,&albuffer[ind]);
+            alBufferData(albuffer[ind], AL_FORMAT_MONO16, pcmdata, 4410*N*sizeof(int16_t),44100);            
+            alSourceQueueBuffers(alsource, 1, &albuffer[ind]);
+            nbufproced++;
+            
+            //            alSourceUnqueueBuffers(alsource, 1, &albuffer[flipcnt]);
+            //            alSourceQueueBuffers(alsource, 1, &albuffer[flipcnt^1]);
+            //            alSourcePlay(alsource);
+            //            alBufferData(albuffer[flipcnt], AL_FORMAT_MONO16, pcmdata, 4410*sizeof(int16_t),44100);
+            //            flipcnt=flipcnt^1;
+            //                        print("flipcnt:%d %f",flipcnt,now());
+        }
+    }
+
+        
+    return 0;   
+}
 void *receiveRTMPThreadFunc(void *urlarg) {
     char *url=(char*)urlarg;
     print("receiveRTMPThreadFunc: url:'%s'",url);
@@ -379,22 +432,7 @@ int main( int argc, char **argv ) {
 
 
     /////////////
-    g_soundsystem = new SoundSystem();
     
-    // audio streaming
-    
-    ALuint alsource;
-    ALuint albuffer[2];
-
-    alGenBuffers(2, albuffer);
-    alGenSources(1,&alsource);
-
-    
-    int16_t pcmdata[4410*10];
-    for(int i=0;i<4410*10;i++)pcmdata[i] = (i%100)*100;
-    alBufferData(albuffer[0], AL_FORMAT_MONO16, pcmdata, 4410*10, 44100);
-    alSourceQueueBuffers(alsource,1,&albuffer[0]);
-    alSourcePlay(alsource);
     
     /////////////
 
@@ -405,6 +443,12 @@ int main( int argc, char **argv ) {
         return 1;
     }
 
+    pthread_t audio_tid;
+    err = pthread_create(&audio_tid,NULL, audioThreadFunc, NULL);
+    if(err) {
+        print("pthread_create failed for audio. ret:%d",err);
+        return 1;
+    }
     //////////////
 
     int frm=0,totfrm=0;
@@ -426,18 +470,6 @@ int main( int argc, char **argv ) {
         g_moyai_client->render();
         last_nt=nt;
 
-        //
-        static int flipcnt=0;
-        ALint state;
-        alGetSourcei(alsource, AL_BUFFERS_PROCESSED, &state)        ;
-        if(state==1) {
-            alSourceUnqueueBuffers(alsource, 1, &albuffer[flipcnt]);
-            alSourceQueueBuffers(alsource, 1, &albuffer[flipcnt^1]);
-            alSourcePlay(alsource);
-            alBufferData(albuffer[flipcnt], AL_FORMAT_MONO16, pcmdata, 4410*10,44100);
-            flipcnt=flipcnt^1;
-            print("flipcnt:%d",flipcnt);
-        }
     }
     glfwTerminate();
 
