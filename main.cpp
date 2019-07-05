@@ -209,20 +209,12 @@ void *audioThreadFunc(void *arg) {
         ALint proced;
         alGetSourcei(alsource, AL_BUFFERS_PROCESSED, &proced)        ;
         if(proced>0) {
-            prt("%d ",proced);
             if(proced>1)assertmsg(false,"toobig");
             int ind = nbufproced % 4;
             alSourceUnqueueBuffers(alsource,1,&albuffer[ind]);
             alBufferData(albuffer[ind], AL_FORMAT_MONO16, pcmdata[ind], 4410*N*sizeof(int16_t),44100);            
             alSourceQueueBuffers(alsource, 1, &albuffer[ind]);
             nbufproced++;
-            
-            //            alSourceUnqueueBuffers(alsource, 1, &albuffer[flipcnt]);
-            //            alSourceQueueBuffers(alsource, 1, &albuffer[flipcnt^1]);
-            //            alSourcePlay(alsource);
-            //            alBufferData(albuffer[flipcnt], AL_FORMAT_MONO16, pcmdata, 4410*sizeof(int16_t),44100);
-            //            flipcnt=flipcnt^1;
-            //                        print("flipcnt:%d %f",flipcnt,now());
         }
     }
 
