@@ -4,6 +4,8 @@
 
 #include "client.h" // moyai
 
+#include <pthread.h>
+
 // need brew ffmpeg
 extern "C" {
 #include "libavcodec/avcodec.h"
@@ -18,34 +20,12 @@ Layer *g_layer;
 Image *g_img;
 Texture *g_tex;
 Prop2D *g_prop;
-int g_scrw=640, g_scrh=480;
+const int g_scrw=640, g_scrh=480;
 bool g_game_done=false;
 
-static void save_gray_frame(unsigned char *buf, int wrap, int xsize, int ysize, char *filename)
-{
-    
-    //    FILE *f = fopen(filename,"w");
-    // writing the minimal required header for a pgm file format
-    // portable graymap format -> https://en.wikipedia.org/wiki/Netpbm_format#PGM_example
-    //    fprintf(f, "P5\n%d %d\n%d\n", xsize, ysize, 255);
+unsigned char g_picture_data[g_scrw*g_scrh*4];
+int g_frame_num;
 
-    // writing line by line
-    //    for (int i = 0; i < ysize; i++) fwrite(buf + i * wrap, 1, xsize, f);
-    //    fclose(f);
-    
-    int w=xsize, h=ysize;
-    if(w>g_img->width) w=g_img->width;
-    if(h>g_img->height) h=g_img->height;
-    print("w:%d h:%d",w,h);
-    for(int y=0;y<h;y++) {
-        for(int x=0;x<w;x++) {
-            uint8_t r,g,b,a=0xff;
-            r=g=b= buf[x+y*wrap];
-            g_img->setPixelRaw(x,y,r,g,b,a);
-        }
-    }
-    g_tex->setImage(g_img);
-}
 
 static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFrame *pFrame)
 {
@@ -70,24 +50,46 @@ static int decode_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFra
         }
 
         if (response >= 0) {
-            fprintf(stderr,
-                    "Frame %d (type=%c, size=%d bytes) pts %d key_frame %d [DTS %d] Format:%d\n",
-                    pCodecContext->frame_number,
-                    av_get_picture_type_char(pFrame->pict_type),
-                    pFrame->pkt_size,
-                    (int)pFrame->pts,
-                    pFrame->key_frame,
-                    pFrame->coded_picture_number,
-                    pFrame->format // AV_PIX_FMT_YUV420P = 0
-                    
-                    );
+#if 0            
+            print("Frame %d (type=%c, size=%d bytes) pts %d key_frame %d [DTS %d] Format:%d",
+                  pCodecContext->frame_number,
+                  av_get_picture_type_char(pFrame->pict_type),
+                  pFrame->pkt_size,
+                  (int)pFrame->pts,
+                  pFrame->key_frame,
+                  pFrame->coded_picture_number,
+                  pFrame->format // AV_PIX_FMT_YUV420P = 0
+                  );
+#endif
 
-            char frame_filename[1024];
-            snprintf(frame_filename, sizeof(frame_filename), "%s-%d.pgm", "frame", pCodecContext->frame_number);
-            // save a grayscale frame into a .pgm file
-            save_gray_frame(pFrame->data[0], pFrame->linesize[0], pFrame->width, pFrame->height, frame_filename);
-            fprintf(stderr,"pointers: %p %p %p %p\n", // Y U V
-                    pFrame->data[0], pFrame->data[1], pFrame->data[2], pFrame->data[3]);
+            unsigned char *ydata=pFrame->data[0];
+            unsigned char *udata=pFrame->data[1];
+            unsigned char *vdata=pFrame->data[2];
+            assert(ydata);
+            assert(udata);
+            assert(vdata);            
+            int ylinesize=pFrame->linesize[0]; // 768
+            int ulinesize=pFrame->linesize[1]; // 384
+            int vlinesize=pFrame->linesize[2]; // 384
+            int w=pFrame->width;
+            int h=pFrame->height;
+            int g_frame_num=pCodecContext->frame_number;
+
+            //                        print("LSZ:%d %d %d w:%d h:%d", ylinesize, ulinesize, vlinesize, w, h);
+            
+            if(h>g_scrh)h=g_scrh;
+            if(w>g_scrw)w=g_scrw;
+
+            size_t copysz = w*h*1;
+            for(int y=0;y<h;y++) {
+                for(int x=0;x<w;x++) {
+                    int ind = (x+y*w)*4;
+                    g_picture_data[ind]=ydata[x+y*ylinesize];
+                    g_picture_data[ind+1]=ydata[x+y*ylinesize];
+                    g_picture_data[ind+2]=ydata[x+y*ylinesize];
+                    g_picture_data[ind+3]=0xff;
+                }
+            }
         }
     }
     return 0;
@@ -106,6 +108,124 @@ void keyboardCallback( GLFWwindow *window, int key, int scancode, int action, in
         g_game_done=true;
     }
 }
+
+void *receiveRTMPThreadFunc(void *urlarg) {
+    char *url=(char*)urlarg;
+    print("receiveRTMPThreadFunc: url:'%s'",url);
+    av_register_all();
+    avformat_network_init();
+    
+    AVFormatContext *pFormatContext = avformat_alloc_context();
+    fprintf(stderr,"avformat_alloc_context: ret: %p\n",pFormatContext);
+    if(!pFormatContext) {
+        fprintf(stderr,"fatal\n");
+        return 0;
+    }
+
+
+    if(avformat_open_input(&pFormatContext, url, NULL, NULL) != 0) { // blocks if no stream live
+        fprintf(stderr,"avformat_open_input failed\n");
+        return 0;
+    }
+    fprintf(stderr,"avformat_open_input ok\n");
+
+    if(avformat_find_stream_info(pFormatContext,  NULL) < 0) {
+        fprintf(stderr,"avformat_find_stream_info failed\n");
+        return 0;
+    }
+    fprintf(stderr,"avformat_find_stream_info ok\n"); 
+
+    av_dump_format(pFormatContext,0,url,0);
+
+    AVCodec *pCodec = NULL;
+    AVCodecParameters *pCodecParameters =  NULL;
+    
+    int videoindex=-1;
+    for(int i=0;i<pFormatContext->nb_streams;i++) {
+        AVCodecParameters *pLocalCodecParameters =  NULL;
+        pLocalCodecParameters = pFormatContext->streams[i]->codecpar;
+        fprintf(stderr,"AVStream->time_base before open coded %d/%d\n", pFormatContext->streams[i]->time_base.num, pFormatContext->streams[i]->time_base.den);
+        fprintf(stderr,"AVStream->r_frame_rate before open coded %d/%d\n", pFormatContext->streams[i]->r_frame_rate.num, pFormatContext->streams[i]->r_frame_rate.den);
+        fprintf(stderr,"AVStream->start_time %" PRId64 "\n", pFormatContext->streams[i]->start_time);
+        fprintf(stderr,"AVStream->duration %" PRId64 "\n", pFormatContext->streams[i]->duration);
+        fprintf(stderr,"finding the proper decoder (CODEC)\n");
+        AVCodec *pLocalCodec = NULL;
+        pLocalCodec = avcodec_find_decoder(pLocalCodecParameters->codec_id);
+        if(!pLocalCodec) {
+            fprintf(stderr,"pLocalCodec null\n");
+            return 0;
+        }
+        if (pLocalCodecParameters->codec_type == AVMEDIA_TYPE_VIDEO) {
+            if(videoindex==-1) {
+                videoindex = i;
+                fprintf(stderr,"videoindex:%d\n",videoindex);
+                pCodec = pLocalCodec;
+                pCodecParameters = pLocalCodecParameters;
+                
+            }
+            fprintf(stderr,"Video Codec: resolution %d x %d\n", pLocalCodecParameters->width, pLocalCodecParameters->height);
+        } else if (pLocalCodecParameters->codec_type == AVMEDIA_TYPE_AUDIO) {
+            fprintf(stderr,"Audio Codec: %d channels, sample rate %d\n", pLocalCodecParameters->channels, pLocalCodecParameters->sample_rate);
+            
+        }
+        fprintf(stderr,"\tCodec %s ID %d bit_rate %lld\n", pLocalCodec->name, pLocalCodec->id, pLocalCodecParameters->bit_rate);
+    }
+
+    AVCodecContext *pCodecContext = avcodec_alloc_context3(pCodec);
+    if (!pCodecContext) {
+        fprintf(stderr,"failed to allocated memory for AVCodecContext\n");
+        return 0;
+    }
+
+
+    if (avcodec_parameters_to_context(pCodecContext, pCodecParameters) < 0) {
+        fprintf(stderr,"failed to copy codec params to codec context\n");
+        return 0;
+    }
+
+    if (avcodec_open2(pCodecContext, pCodec, NULL) < 0) {
+        fprintf(stderr,"failed to open codec through avcodec_open2\n");
+        return 0;
+    }
+
+    AVFrame *pFrame = av_frame_alloc();
+    if (!pFrame) {
+        fprintf(stderr,"failed to allocated memory for AVFrame\n");
+        return 0;
+    }
+    AVPacket *pPacket = av_packet_alloc();
+    if (!pPacket) {
+        fprintf(stderr,"failed to allocated memory for AVPacket\n");
+        return 0;
+    }
+
+    while (av_read_frame(pFormatContext, pPacket) >= 0) {
+        // if it's the video stream
+        if (pPacket->stream_index == videoindex) {
+            //            fprintf(stderr,"AVPacket->pts %" PRId64 "\n", pPacket->pts);
+            int response = decode_packet(pPacket, pCodecContext, pFrame);
+            if (response < 0) break;
+            // stop it, otherwise we'll be saving hundreds of frames
+        }
+        av_packet_unref(pPacket);
+    }
+
+    fprintf(stderr,"releasing all the resources\n");
+    avformat_close_input(&pFormatContext);
+    avformat_free_context(pFormatContext);
+    av_packet_free(&pPacket);
+    av_frame_free(&pFrame);
+    avcodec_free_context(&pCodecContext);
+    return 0;
+}
+
+
+
+void updateImage() {
+    g_img->copyFromBuffer(g_picture_data,g_scrw,g_scrh, g_scrw*g_scrh*4);
+    g_tex->setImage(g_img);
+}
+
 
 // ./player 127.0.0.1 appname streamname
 int main( int argc, char **argv ) {
@@ -160,120 +280,33 @@ int main( int argc, char **argv ) {
 
     
     /////////////
-    
-    av_register_all();
-    avformat_network_init();
-    
-    AVFormatContext *pFormatContext = avformat_alloc_context();
-    fprintf(stderr,"avformat_alloc_context: ret: %p\n",pFormatContext);
-    if(!pFormatContext) {
-        fprintf(stderr,"fatal\n");
+
+    pthread_t tid;
+    int err=pthread_create(&tid,NULL,receiveRTMPThreadFunc, url);
+    if(err) {
+        print("pthread_create failed. ret:%d",err);
         return 1;
     }
 
-
-    if(avformat_open_input(&pFormatContext, url, NULL, NULL) != 0) { // blocks if no stream live
-        fprintf(stderr,"avformat_open_input failed\n");
-        return 1;
-    }
-    fprintf(stderr,"avformat_open_input ok\n");
-
-    if(avformat_find_stream_info(pFormatContext,  NULL) < 0) {
-        fprintf(stderr,"avformat_find_stream_info failed\n");
-        return 1;
-    }
-    fprintf(stderr,"avformat_find_stream_info ok\n"); 
-
-    av_dump_format(pFormatContext,0,url,0);
-
-    AVCodec *pCodec = NULL;
-    AVCodecParameters *pCodecParameters =  NULL;
-    
-    int videoindex=-1;
-    for(int i=0;i<pFormatContext->nb_streams;i++) {
-        AVCodecParameters *pLocalCodecParameters =  NULL;
-        pLocalCodecParameters = pFormatContext->streams[i]->codecpar;
-        fprintf(stderr,"AVStream->time_base before open coded %d/%d\n", pFormatContext->streams[i]->time_base.num, pFormatContext->streams[i]->time_base.den);
-        fprintf(stderr,"AVStream->r_frame_rate before open coded %d/%d\n", pFormatContext->streams[i]->r_frame_rate.num, pFormatContext->streams[i]->r_frame_rate.den);
-        fprintf(stderr,"AVStream->start_time %" PRId64 "\n", pFormatContext->streams[i]->start_time);
-        fprintf(stderr,"AVStream->duration %" PRId64 "\n", pFormatContext->streams[i]->duration);
-        fprintf(stderr,"finding the proper decoder (CODEC)\n");
-        AVCodec *pLocalCodec = NULL;
-        pLocalCodec = avcodec_find_decoder(pLocalCodecParameters->codec_id);
-        if(!pLocalCodec) {
-            fprintf(stderr,"pLocalCodec null\n");
-            return 1;
+    int frm=0,totfrm=0;
+    static double last_nt=now();
+    static double last_print_time;
+    while(!g_game_done) {
+        double nt=now();
+        double dt=nt-last_nt;
+        if(last_print_time<nt-1) {
+            last_print_time=nt;
+            print("FPS:%d(%d) recvfrm:%d diff_frm:%d",frm, totfrm, g_frame_num, g_frame_num - totfrm);
+            frm=0;
         }
-        if (pLocalCodecParameters->codec_type == AVMEDIA_TYPE_VIDEO) {
-            if(videoindex==-1) {
-                videoindex = i;
-                fprintf(stderr,"videoindex:%d\n",videoindex);
-                pCodec = pLocalCodec;
-                pCodecParameters = pLocalCodecParameters;
-                
-            }
-            fprintf(stderr,"Video Codec: resolution %d x %d\n", pLocalCodecParameters->width, pLocalCodecParameters->height);
-        } else if (pLocalCodecParameters->codec_type == AVMEDIA_TYPE_AUDIO) {
-            fprintf(stderr,"Audio Codec: %d channels, sample rate %d\n", pLocalCodecParameters->channels, pLocalCodecParameters->sample_rate);
-            
-        }
-        fprintf(stderr,"\tCodec %s ID %d bit_rate %lld\n", pLocalCodec->name, pLocalCodec->id, pLocalCodecParameters->bit_rate);
-    }
-
-    AVCodecContext *pCodecContext = avcodec_alloc_context3(pCodec);
-    if (!pCodecContext) {
-        fprintf(stderr,"failed to allocated memory for AVCodecContext\n");
-        return 1;
-    }
-
-
-    if (avcodec_parameters_to_context(pCodecContext, pCodecParameters) < 0) {
-        fprintf(stderr,"failed to copy codec params to codec context\n");
-        return 1;
-    }
-
-    if (avcodec_open2(pCodecContext, pCodec, NULL) < 0) {
-        fprintf(stderr,"failed to open codec through avcodec_open2\n");
-        return 1;
-    }
-
-    AVFrame *pFrame = av_frame_alloc();
-    if (!pFrame) {
-        fprintf(stderr,"failed to allocated memory for AVFrame\n");
-        return 1;
-    }
-    AVPacket *pPacket = av_packet_alloc();
-    if (!pPacket) {
-        fprintf(stderr,"failed to allocated memory for AVPacket\n");
-        return 1;
-    }
-
-    while (av_read_frame(pFormatContext, pPacket) >= 0) {
-
-        glfwPollEvents();
-        g_moyai_client->render();
-        glfwSwapBuffers(g_win);
-        glFlush();
+        frm++;
+        totfrm++;
         
-        // if it's the video stream
-        if (pPacket->stream_index == videoindex) {
-            fprintf(stderr,"AVPacket->pts %" PRId64 "\n", pPacket->pts);
-            int response = decode_packet(pPacket, pCodecContext, pFrame);
-            if (response < 0) break;
-            // stop it, otherwise we'll be saving hundreds of frames
-        }
-        av_packet_unref(pPacket);
-
-        if(g_game_done)break;
+        glfwPollEvents();
+        updateImage();
+        g_moyai_client->render();
+        last_nt=nt;
     }
+    glfwTerminate();
 
-    fprintf(stderr,"releasing all the resources\n");
-    avformat_close_input(&pFormatContext);
-    avformat_free_context(pFormatContext);
-    av_packet_free(&pPacket);
-    av_frame_free(&pFrame);
-    avcodec_free_context(&pCodecContext);
-    
-    fprintf(stderr,"end\n");
-    
 }
