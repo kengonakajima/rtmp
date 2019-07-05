@@ -4,6 +4,10 @@
 
 #include "client.h" // moyai
 
+#include "OpenAL/al.h"
+#include "OpenAL/alc.h"
+
+
 #include <pthread.h>
 
 // need brew ffmpeg
@@ -26,6 +30,8 @@ bool g_game_done=false;
 
 unsigned char g_picture_data[g_scrw*g_scrh*4];
 int g_frame_num;
+
+SoundSystem *g_soundsystem;
 
 
 struct SwsContext *g_swsctx;
@@ -137,12 +143,14 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
                 if(lv>lmax)lmax=lv;
                 if(rv>rmax)rmax=rv;
             }
+#if 0
             print("AFrame %d size:%d chn:%d fmt:%s samples:%d lmax:%f rmax:%f",
                   aCodecContext->frame_number, pFrame->pkt_size, chn,
                   av_get_sample_fmt_name((AVSampleFormat)pFrame->format), // AV_SAMPLE_FMT_FLTP : OBS uses this
                   pFrame->nb_samples,
                   lmax, rmax
                   );
+#endif            
             
         }
         
@@ -369,15 +377,35 @@ int main( int argc, char **argv ) {
     g_prop->setLoc(0,0);
     g_layer->insertProp(g_prop);
 
+
+    /////////////
+    g_soundsystem = new SoundSystem();
+    
+    // audio streaming
+    
+    ALuint alsource;
+    ALuint albuffer[2];
+
+    alGenBuffers(2, albuffer);
+    alGenSources(1,&alsource);
+
+    
+    int16_t pcmdata[4410*10];
+    for(int i=0;i<4410*10;i++)pcmdata[i] = (i%100)*100;
+    alBufferData(albuffer[0], AL_FORMAT_MONO16, pcmdata, 4410*10, 44100);
+    alSourceQueueBuffers(alsource,1,&albuffer[0]);
+    alSourcePlay(alsource);
     
     /////////////
 
-    pthread_t tid;
-    int err=pthread_create(&tid,NULL,receiveRTMPThreadFunc, url);
+    pthread_t rtmp_tid;
+    int err=pthread_create(&rtmp_tid,NULL,receiveRTMPThreadFunc, url);
     if(err) {
         print("pthread_create failed. ret:%d",err);
         return 1;
     }
+
+    //////////////
 
     int frm=0,totfrm=0;
     static double last_nt=now();
@@ -397,6 +425,19 @@ int main( int argc, char **argv ) {
         updateImage();
         g_moyai_client->render();
         last_nt=nt;
+
+        //
+        static int flipcnt=0;
+        ALint state;
+        alGetSourcei(alsource, AL_BUFFERS_PROCESSED, &state)        ;
+        if(state==1) {
+            alSourceUnqueueBuffers(alsource, 1, &albuffer[flipcnt]);
+            alSourceQueueBuffers(alsource, 1, &albuffer[flipcnt^1]);
+            alSourcePlay(alsource);
+            alBufferData(albuffer[flipcnt], AL_FORMAT_MONO16, pcmdata, 4410*10,44100);
+            flipcnt=flipcnt^1;
+            print("flipcnt:%d",flipcnt);
+        }
     }
     glfwTerminate();
 

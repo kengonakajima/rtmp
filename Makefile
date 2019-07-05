@@ -44,7 +44,7 @@ CLILIBFLAGS=-framework IOKit -framework OpenGL -framework CoreFoundation -framew
 all: player from_rtmpdump
 
 player : main.cpp
-	g++ $(CFLAGS) -o player main.cpp librtmp/librtmp.a $(OPENSSLLIBS) -lz $(FFMPEGLIBS) $(FRAMEWORKS) $(OPENCORELIBS) $(ETCLIBS) $(GLFWLIB) $(MOYAICLILIB) $(JPEGLIB) $(FTGLLIB) $(LIBUVLIB)
+	g++ $(CFLAGS) -o player main.cpp librtmp/librtmp.a $(OPENSSLLIBS) -lz $(FFMPEGLIBS) $(FRAMEWORKS) $(OPENCORELIBS) $(ETCLIBS) $(GLFWLIB) $(MOYAICLILIB) $(JPEGLIB) $(FTGLLIB) $(LIBUVLIB) $(ALUTLIB)
 
 from_rtmpdump : from_rtmpdump.cpp
 	g++ -g -o from_rtmpdump from_rtmpdump.cpp librtmp/librtmp.a $(OPENSSLLIBS)  -lz
