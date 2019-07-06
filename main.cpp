@@ -63,12 +63,12 @@ static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext,
         }
 
         if (response >= 0) {
-#if 0            
-            print("Frame %d (type=%c, size=%d bytes) pts %d key_frame %d [DTS %d] Format:%d",
+#if 1            
+            print("VFrame %d (type=%c, size=%d bytes) pts %d dts %d dur:%d key_frame %d [DTS %d] Format:%d",
                   pCodecContext->frame_number,
                   av_get_picture_type_char(pFrame->pict_type),
                   pFrame->pkt_size,
-                  (int)pFrame->pts,
+                  (int)pFrame->pts, pPacket->dts, pPacket->duration,
                   pFrame->key_frame,
                   pFrame->coded_picture_number,
                   pFrame->format // AV_PIX_FMT_YUV420P = 0
@@ -156,16 +156,18 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
             char llvch,rlvch;
             if(lmax<0.02) llvch='.'; else if(lmax<0.04)llvch=':'; else llvch='*';
             if(rmax<0.02) rlvch='.'; else if(rmax<0.04)rlvch=':'; else rlvch='*';
-            
-            print("AFrm %d sz:%d ch:%d fmt:%s nsmpl:%d llv:%c rlv:%c bi:%d ph:%d(%d) diff:%d",
+
+            int diff_buf = buf_head - play_head;
+            print("AFrame %d sz:%d ch:%d pts:%d dts:%d dur:%d fmt:%s nsmpl:%d llv:%c rlv:%c bi:%d ph:%d(%d) diff:%d",
                   aCodecContext->frame_number, pFrame->pkt_size, chn,
+                  pFrame->pts, pPacket->dts, pPacket->duration,
                   av_get_sample_fmt_name((AVSampleFormat)pFrame->format), // AV_SAMPLE_FMT_FLTP : OBS uses this
                   pFrame->nb_samples,
                   llvch,rlvch,
                   buf_ind,
                   play_head,
                   play_head % ABUFNUM,
-                  buf_head - play_head
+                  diff_buf
                   );
 #endif            
 
@@ -190,6 +192,7 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
                     play_head++;
                 }
             }
+            if(diff_buf>10) play_head++;
             ALint sst;
             alGetSourcei(g_alsource, AL_SOURCE_STATE, &sst);
             if(sst==AL_STOPPED) {
