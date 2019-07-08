@@ -32,7 +32,7 @@ unsigned char g_picture_data[g_scrw*g_scrh*4];
 int g_frame_num;
 
 SoundSystem *g_soundsystem;
-const int ABUFNUM=64, ABUFLEN=1024; // bufnum増やすと遅れが増えるが、ずれてるだけかなあ
+const int ABUFNUM=4, ABUFLEN=1024; // bufnum増やすと遅れが増えるが、ずれてるだけかなあ
 ALuint g_alsource;
 ALuint g_albuffer[ABUFNUM];
 int16_t g_pcmdata[ABUFNUM][ABUFLEN];
@@ -52,6 +52,9 @@ int g_sample_head=0;
 
 double g_first_picture_received_at=0;
 int g_latest_picture_pts=0;
+double g_first_sample_received_at=0;
+int g_latest_sample_pts=0;
+
 pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void setupRingbuffer() {
@@ -65,7 +68,24 @@ void setupRingbuffer() {
     }
 }
 
-
+void pushSampleToRing( int16_t *buf, size_t szb, int pts ) {
+    int r=pthread_mutex_lock(&g_mutex);
+    if(r!=0) {
+        print("pushSampleToRing: pth lock fail");
+        return;
+    }
+    int di=g_sample_head % elementof(g_sample_ring);
+    g_sample_ring[di].pts = pts;
+    g_sample_ring[di].szb = szb;
+    memcpy( g_sample_ring[di].data, buf, szb );
+    g_sample_head++;
+    if(g_first_sample_received_at==0) g_first_sample_received_at=now();
+    g_latest_sample_pts = pts;
+    r=pthread_mutex_unlock(&g_mutex);
+    if(r!=0) {
+        print("pushSampleToRing: pth unlock fail");
+    }
+}
 void pushPictureToRing( uint8_t *buf, size_t sz, int pts ) {
     int r=pthread_mutex_lock(&g_mutex);
     if(r!=0) {
@@ -178,11 +198,6 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
                 if(lv>lmax)lmax=lv;
                 if(rv>rmax)rmax=rv;
             }
-
-            static int buf_head=0; // ringbuffer head index
-            int buf_ind=buf_head % ABUFNUM;
-            static int play_head=0;
-
             
 #if 1
             char llvch,rlvch;
@@ -198,40 +213,17 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
                   g_sample_head
                   );
 #endif            
-            int si = g_sample_head % elementof(g_sample_ring);
             int samplenum=pFrame->nb_samples;
             if(samplenum>ABUFLEN) samplenum=ABUFLEN;
+            int16_t outbuf[ABUFLEN];
+            
             for(int i=0;i<samplenum;i++) {
                 float left_level=((float*)pFrame->data[0])[i]; // TODO: stereo
                 int amp=3;
-                int16_t *outptr = (int16_t*)g_sample_ring[si].data;
-                outptr[i]=left_level * 30000 * amp;
-                //                g_pcmdata[buf_ind][i]=(i%50)*100;
+                outbuf[i]=left_level * 30000 * amp;
             }
-            g_sample_head++;
-#if 0            
-            ALint proced;
-            alGetSourcei(g_alsource, AL_BUFFERS_PROCESSED, &proced)        ;
-            if(proced>0) {
-                prt("proced:%d ",proced);
-                for(int j=0;j<proced;j++) {
-                    int ind = play_head % ABUFNUM;
-                    alSourceUnqueueBuffers(g_alsource,1,&g_albuffer[ind]);
-                    alBufferData(g_albuffer[ind], AL_FORMAT_MONO16, g_pcmdata[ind], samplenum*sizeof(int16_t),44100);
-                    alSourceQueueBuffers(g_alsource, 1, &g_albuffer[ind]);
-                    play_head++;
-                }
-            }
-            if(diff_buf>10) play_head++;
-            ALint sst;
-            alGetSourcei(g_alsource, AL_SOURCE_STATE, &sst);
-            if(sst==AL_STOPPED) {
-                alSourcePlay(g_alsource);
-                print("play");
-            }
-#endif            
-        }
-        
+            pushSampleToRing(outbuf,samplenum*sizeof(int16_t),pFrame->pts);
+        }        
     }
     return 0;
 }
@@ -415,41 +407,83 @@ void *receiveRTMPThreadFunc(void *urlarg) {
 
 
 // play buffered picture and video synchronized
-void updateImage() {
+void updateVideo() {
     int r=pthread_mutex_lock(&g_mutex);
     if(r<0) {
-        print("updateImage: lock fail");
+        print("updateVideo: lock fail");
         return;
     }
+
+    double nt=now();
+    double elt=nt-g_first_picture_received_at;
+    int pts = (int)(elt *1000);
     
     if(g_first_picture_received_at>0) {
-        double nt=now();
-        double elt=nt-g_first_picture_received_at;
-        int pts = (int)(elt *1000);
         int play_pts = pts;
         if( play_pts < g_latest_picture_pts - 1000) play_pts = g_latest_picture_pts-1000; //
-
-        // headから反対方向にスキャンして、play_ptsより古いのがあったら、そのデータを描画またはalbufferに積んで消す(pts=0)
-        print("elt:%f timer-pts:%d stream-pts:%d play_pts:%d",elt,pts, g_latest_picture_pts, play_pts);
-
-        for(int invi=0;invi<elementof(g_picture_ring);invi++) {
-            int logical_ind = g_picture_head - invi;
-            if(logical_ind<0)continue;
+        //        print("elt:%f timer-pts:%d stream-pts:%d play_pts:%d",elt,pts, g_latest_picture_pts, play_pts);        
+        // headから+にスキャンして、play_ptsより新しいのがあったら、そのデータを描画して消す
+        for(int di=0;di<elementof(g_picture_ring);di++) {
+            int logical_ind = g_picture_head + di;
             int ind = logical_ind % elementof(g_picture_ring);
             DecodedData *ddp=&g_picture_ring[ind];
             //                print("logical_ind:%d ind:%d pts:%d",logical_ind,ind,ddp->pts);
             if(ddp->pts==0)continue;
-            if( ddp->pts < play_pts ) {
-                print("vid ind:%d ddp->pts:%d play_pts:%d",ind, ddp->pts, play_pts);
+            if( ddp->pts >= play_pts ) {
+                //                print("vid ind:%d ddp->pts:%d play_pts:%d",ind, ddp->pts, play_pts);
                 ddp->pts=0;
                 g_img->copyFromBuffer((unsigned char*)ddp->data,g_scrw,g_scrh, g_scrw*g_scrh*4);
                 g_tex->setImage(g_img);
                 break;
             }
         }
+
+        if(g_first_sample_received_at>0) {
+            int play_pts = pts;
+            if( play_pts < g_latest_sample_pts - 1000) play_pts = g_latest_sample_pts-1000; //
+            //            print("elt:%f timer-pts:%d stream-pts:%d play_pts:%d",elt,pts, g_latest_picture_pts, play_pts);
+            
+            // unqueue/queue AL data
+            static int play_head=0;
+            ALint proced;
+            alGetSourcei(g_alsource, AL_BUFFERS_PROCESSED, &proced)        ;
+            if(proced>0) {
+                prt("al source queue proced:%d ",proced);
+                for(int j=0;j<proced;j++) {
+                    int bufind = play_head % ABUFNUM;
+                    alSourceUnqueueBuffers(g_alsource,1,&g_albuffer[bufind]);
+
+                    // retrieve new data from audio queue
+                    for(int di=0;di<elementof(g_sample_ring);di++) {
+                        int logical_ind = g_sample_head + di;
+                        int ind = logical_ind % elementof(g_sample_ring);
+                        DecodedData *ddp=&g_sample_ring[ind];
+                        //                print("logical_ind:%d ind:%d pts:%d",logical_ind,ind,ddp->pts);
+                        if(ddp->pts==0)continue;
+                        if( ddp->pts >= play_pts ) {
+                            print("smpl ind:%d ddp->pts:%d play_pts:%d diff:%d nt:%f",
+                                  ind, ddp->pts, play_pts, ddp->pts - play_pts, now);
+                            ddp->pts=0;
+                            alBufferData(g_albuffer[bufind], AL_FORMAT_MONO16, ddp->data, ddp->szb,44100);
+                            alSourceQueueBuffers(g_alsource, 1, &g_albuffer[bufind]);
+                            play_head++;
+                            break;
+                        }
+                    }
+                }
+            }
+            ALint sst;
+            alGetSourcei(g_alsource, AL_SOURCE_STATE, &sst);
+            if(sst==AL_STOPPED) {
+                alSourcePlay(g_alsource);
+                print("play");
+            }
+                    
+
+        }
     }
     r=pthread_mutex_unlock(&g_mutex);
-    if(r<0) print("updateImage: pthread_mutex_unlock fail");
+    if(r<0) print("updateVideo: pthread_mutex_unlock fail");
 }
 
 
@@ -517,14 +551,7 @@ int main( int argc, char **argv ) {
         print("pthread_create failed. ret:%d",err);
         return 1;
     }
-#if 0
-    pthread_t audio_tid;
-    err = pthread_create(&audio_tid,NULL, audioThreadFunc, NULL);
-    if(err) {
-        print("pthread_create failed for audio. ret:%d",err);
-        return 1;
-    }
-#endif    
+
     //////////////
 
     int frm=0,totfrm=0;
@@ -542,7 +569,7 @@ int main( int argc, char **argv ) {
         totfrm++;
         
         glfwPollEvents();
-        updateImage();
+        updateVideo();
         g_moyai_client->render();
         last_nt=nt;
 
