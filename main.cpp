@@ -414,13 +414,14 @@ void updateVideo() {
         return;
     }
 
+    int mgn_time=700;
     double nt=now();
     double elt=nt-g_first_picture_received_at;
-    int pts = (int)(elt *1000);
+    int pts = (int)(elt * mgn_time);
     
     if(g_first_picture_received_at>0) {
         int play_pts = pts;
-        if( play_pts < g_latest_picture_pts - 1000) play_pts = g_latest_picture_pts-1000; //
+        if( play_pts < g_latest_picture_pts - mgn_time) play_pts = g_latest_picture_pts-mgn_time; //
         //        print("elt:%f timer-pts:%d stream-pts:%d play_pts:%d",elt,pts, g_latest_picture_pts, play_pts);        
         // headから+にスキャンして、play_ptsより新しいのがあったら、そのデータを描画して消す
         for(int di=0;di<elementof(g_picture_ring);di++) {
@@ -440,7 +441,7 @@ void updateVideo() {
 
         if(g_first_sample_received_at>0) {
             int play_pts = pts;
-            if( play_pts < g_latest_sample_pts - 1000) play_pts = g_latest_sample_pts-1000; //
+            if( play_pts < g_latest_sample_pts - mgn_time) play_pts = g_latest_sample_pts-mgn_time; //
             //            print("elt:%f timer-pts:%d stream-pts:%d play_pts:%d",elt,pts, g_latest_picture_pts, play_pts);
             
             // unqueue/queue AL data
