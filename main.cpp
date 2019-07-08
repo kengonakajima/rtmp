@@ -39,6 +39,29 @@ int16_t g_pcmdata[ABUFNUM][ABUFLEN];
 
 struct SwsContext *g_swsctx;
 
+struct DecodedData {
+    int pts; // 0 for unused
+    void *data;
+    size_t szb;
+};
+
+struct DecodedData g_picture_ring[100];
+struct DecodedData g_sample_ring[100];
+int g_picture_head=0;
+int g_sample_head=0;
+
+double g_first_picture_received_at=0;
+
+void setupRingbuffer() {
+    for(int i=0;i<elementof(g_picture_ring);i++) {
+        g_picture_ring[i].szb=g_scrw*g_scrh*4;
+        g_picture_ring[i].data=malloc( g_picture_ring[i].szb );
+    }
+    for(int i=0;i<elementof(g_sample_ring);i++) {
+        g_sample_ring[i].szb = sizeof(int16_t)*ABUFLEN;
+        g_sample_ring[i].data=malloc( g_sample_ring[i].szb);
+    }
+}
 
 static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFrame *pFrame)
 {
@@ -64,16 +87,18 @@ static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext,
 
         if (response >= 0) {
 #if 1            
-            print("VFrame %d (type=%c, size=%d bytes) pts %d dts %d dur:%d key_frame %d [DTS %d] Format:%d",
+            print("VFrame %d t:%c sz:%d pts:%d dts:%d dur:%d key_frame:%d [DTS %d] fmt:%d head:%d",
                   pCodecContext->frame_number,
                   av_get_picture_type_char(pFrame->pict_type),
                   pFrame->pkt_size,
                   (int)pFrame->pts, pPacket->dts, pPacket->duration,
                   pFrame->key_frame,
                   pFrame->coded_picture_number,
-                  pFrame->format // AV_PIX_FMT_YUV420P = 0
+                  pFrame->format, // AV_PIX_FMT_YUV420P = 0
+                  g_picture_head
                   );
 #endif
+            if(g_first_picture_received_at==0) g_first_picture_received_at=now();
 
             unsigned char *ydata=pFrame->data[0];
             unsigned char *udata=pFrame->data[1];
@@ -88,12 +113,24 @@ static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext,
             int h=pFrame->height;
             int g_frame_num=pCodecContext->frame_number;
 
+#if 0            
             //            static unsigned char outbuf[g_scrw*g_scrh*3];
             unsigned char *outptrs[1]= { g_picture_data };
             int outlinesizes[1] = { g_scrw*4 };
 
             int swsret=sws_scale(g_swsctx, pFrame->data, pFrame->linesize, 0, pFrame->height, outptrs, outlinesizes );
             if(swsret<=0) print("swsret:%d",swsret);
+#endif
+
+            int di=g_picture_head % elementof(g_picture_ring);
+            unsigned char *outptrs[1]= { (unsigned char*)g_picture_ring[di].data };
+            int outlinesizes[1] = { g_scrw*4 };
+
+            int swsret=sws_scale(g_swsctx, pFrame->data, pFrame->linesize, 0, pFrame->height, outptrs, outlinesizes );
+            if(swsret<=0) print("swsret:%d",swsret);
+
+
+            g_picture_head++;
             
             //                        print("LSZ:%d %d %d w:%d h:%d", ylinesize, ulinesize, vlinesize, w, h);
 #if 0            
@@ -157,29 +194,27 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
             if(lmax<0.02) llvch='.'; else if(lmax<0.04)llvch=':'; else llvch='*';
             if(rmax<0.02) rlvch='.'; else if(rmax<0.04)rlvch=':'; else rlvch='*';
 
-            int diff_buf = buf_head - play_head;
-            print("AFrame %d sz:%d ch:%d pts:%d dts:%d dur:%d fmt:%s nsmpl:%d llv:%c rlv:%c bi:%d ph:%d(%d) diff:%d",
+            print("AFrame %d sz:%d ch:%d pts:%d dts:%d dur:%d fmt:%s nsmpl:%d llv:%c rlv:%c head:%d",
                   aCodecContext->frame_number, pFrame->pkt_size, chn,
                   pFrame->pts, pPacket->dts, pPacket->duration,
                   av_get_sample_fmt_name((AVSampleFormat)pFrame->format), // AV_SAMPLE_FMT_FLTP : OBS uses this
                   pFrame->nb_samples,
                   llvch,rlvch,
-                  buf_ind,
-                  play_head,
-                  play_head % ABUFNUM,
-                  diff_buf
+                  g_sample_head
                   );
 #endif            
-
+            int si = g_sample_head % elementof(g_sample_ring);
             int samplenum=pFrame->nb_samples;
             if(samplenum>ABUFLEN) samplenum=ABUFLEN;
             for(int i=0;i<samplenum;i++) {
                 float left_level=((float*)pFrame->data[0])[i]; // TODO: stereo
                 int amp=3;
-                g_pcmdata[buf_ind][i]=left_level * 30000 * amp;
+                float *outptr = (float*)g_sample_ring[si].data;
+                outptr[i]=left_level * 30000 * amp;
                 //                g_pcmdata[buf_ind][i]=(i%50)*100;
             }
-            buf_head++;
+            g_sample_head++;
+#if 0            
             ALint proced;
             alGetSourcei(g_alsource, AL_BUFFERS_PROCESSED, &proced)        ;
             if(proced>0) {
@@ -199,6 +234,7 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
                 alSourcePlay(g_alsource);
                 print("play");
             }
+#endif            
         }
         
     }
@@ -371,7 +407,17 @@ void *receiveRTMPThreadFunc(void *urlarg) {
             if( response<0) break;
         }
         av_packet_unref(pPacket);
+
+        // play buffered picture and video synchronized
+        if(g_first_picture_received_at>0) {
+            double nt=now();
+            double elt=nt-g_first_picture_received_at;
+            int pts = (int)(elt *1000);
+            print("elt:%f pts:%d",elt,pts);
+        }
     }
+    
+
 
     fprintf(stderr,"releasing all the resources\n");
     avformat_close_input(&pFormatContext);
@@ -397,6 +443,7 @@ int main( int argc, char **argv ) {
         fprintf(stderr,"need URL\n");
         return 1;
     }
+    setupRingbuffer();
 
     /////////////
     if(!glfwInit()) {
