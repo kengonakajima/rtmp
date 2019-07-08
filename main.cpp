@@ -52,6 +52,7 @@ int g_sample_head=0;
 
 double g_first_picture_received_at=0;
 int g_latest_picture_pts=0;
+pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void setupRingbuffer() {
     for(int i=0;i<elementof(g_picture_ring);i++) {
@@ -63,6 +64,29 @@ void setupRingbuffer() {
         g_sample_ring[i].data=malloc( g_sample_ring[i].szb);
     }
 }
+
+
+void pushPictureToRing( uint8_t *buf, size_t sz, int pts ) {
+    int r=pthread_mutex_lock(&g_mutex);
+    if(r!=0) {
+        print("pushPictureToRing: pth lock fail");
+        return;
+    }
+    int di=g_picture_head % elementof(g_picture_ring);            
+    g_picture_ring[di].pts = pts;
+    g_picture_ring[di].szb = sz;
+    memcpy( g_picture_ring[di].data, buf, sz);
+    g_picture_head++;
+
+    if(g_first_picture_received_at==0) g_first_picture_received_at=now();
+    g_latest_picture_pts = pts;
+            
+    r=pthread_mutex_unlock(&g_mutex);
+    if(r!=0) {
+        print("pushPictureToRing: pth unlock fail");
+    }
+}
+
 
 static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext, AVFrame *pFrame)
 {
@@ -99,8 +123,6 @@ static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext,
                   g_picture_head
                   );
 #endif
-            if(g_first_picture_received_at==0) g_first_picture_received_at=now();
-            g_latest_picture_pts = (int)pFrame->pts;
 
             unsigned char *ydata=pFrame->data[0];
             unsigned char *udata=pFrame->data[1];
@@ -115,17 +137,15 @@ static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext,
             int h=pFrame->height;
             int g_frame_num=pCodecContext->frame_number;
 
-            int di=g_picture_head % elementof(g_picture_ring);
-            unsigned char *outptrs[1]= { (unsigned char*)g_picture_ring[di].data };
+
+            static uint8_t buf[g_scrw*g_scrh*4];            
+            unsigned char *outptrs[1]= { buf };
             int outlinesizes[1] = { g_scrw*4 };
 
             int swsret=sws_scale(g_swsctx, pFrame->data, pFrame->linesize, 0, pFrame->height, outptrs, outlinesizes );
             if(swsret<=0) print("swsret:%d",swsret);
 
-            g_picture_ring[di].pts = (int)pFrame->pts;
-            g_picture_ring[di].szb = g_scrw * g_scrh * 4;
-            g_picture_head++;
-            
+            pushPictureToRing(buf, sizeof(buf), pFrame->pts);
         }
     }
     return 0;
@@ -382,37 +402,7 @@ void *receiveRTMPThreadFunc(void *urlarg) {
             if( response<0) break;
         }
         av_packet_unref(pPacket);
-
-        // play buffered picture and video synchronized
-        if(g_first_picture_received_at>0) {
-            double nt=now();
-            double elt=nt-g_first_picture_received_at;
-            int pts = (int)(elt *1000);
-            int play_pts = pts;
-            if( play_pts < g_latest_picture_pts - 1000) play_pts = g_latest_picture_pts-1000; //
-
-            // headから反対方向にスキャンして、play_ptsより古いのがあったら、そのデータを描画またはalbufferに積んで消す(pts=0)
-
-            print("elt:%f timer-pts:%d stream-pts:%d play_pts:%d",elt,pts, g_latest_picture_pts, play_pts);
-            
-            // video
-            for(int invi=0;invi<elementof(g_picture_ring);invi++) {
-                int logical_ind = g_picture_head - invi;
-                if(logical_ind<0)continue;
-                int ind = logical_ind % elementof(g_picture_ring);
-                DecodedData *ddp=&g_picture_ring[ind];
-                //                print("logical_ind:%d ind:%d pts:%d",logical_ind,ind,ddp->pts);
-                if(ddp->pts==0)continue;
-                if( ddp->pts < play_pts ) {
-                    print("vid ind:%d ddp->pts:%d play_pts:%d",ind, ddp->pts, play_pts);
-                    ddp->pts=0;
-
-                    memcpy( g_picture_data, ddp->data, ddp->szb);
-                }
-            }
-        }
     }
-
 
     fprintf(stderr,"releasing all the resources\n");
     avformat_close_input(&pFormatContext);
@@ -424,10 +414,42 @@ void *receiveRTMPThreadFunc(void *urlarg) {
 }
 
 
-
+// play buffered picture and video synchronized
 void updateImage() {
-    g_img->copyFromBuffer(g_picture_data,g_scrw,g_scrh, g_scrw*g_scrh*4);
-    g_tex->setImage(g_img);
+    int r=pthread_mutex_lock(&g_mutex);
+    if(r<0) {
+        print("updateImage: lock fail");
+        return;
+    }
+    
+    if(g_first_picture_received_at>0) {
+        double nt=now();
+        double elt=nt-g_first_picture_received_at;
+        int pts = (int)(elt *1000);
+        int play_pts = pts;
+        if( play_pts < g_latest_picture_pts - 1000) play_pts = g_latest_picture_pts-1000; //
+
+        // headから反対方向にスキャンして、play_ptsより古いのがあったら、そのデータを描画またはalbufferに積んで消す(pts=0)
+        print("elt:%f timer-pts:%d stream-pts:%d play_pts:%d",elt,pts, g_latest_picture_pts, play_pts);
+
+        for(int invi=0;invi<elementof(g_picture_ring);invi++) {
+            int logical_ind = g_picture_head - invi;
+            if(logical_ind<0)continue;
+            int ind = logical_ind % elementof(g_picture_ring);
+            DecodedData *ddp=&g_picture_ring[ind];
+            //                print("logical_ind:%d ind:%d pts:%d",logical_ind,ind,ddp->pts);
+            if(ddp->pts==0)continue;
+            if( ddp->pts < play_pts ) {
+                print("vid ind:%d ddp->pts:%d play_pts:%d",ind, ddp->pts, play_pts);
+                ddp->pts=0;
+                g_img->copyFromBuffer((unsigned char*)ddp->data,g_scrw,g_scrh, g_scrw*g_scrh*4);
+                g_tex->setImage(g_img);
+                break;
+            }
+        }
+    }
+    r=pthread_mutex_unlock(&g_mutex);
+    if(r<0) print("updateImage: pthread_mutex_unlock fail");
 }
 
 
