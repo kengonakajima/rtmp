@@ -51,6 +51,7 @@ int g_picture_head=0;
 int g_sample_head=0;
 
 double g_first_picture_received_at=0;
+int g_latest_picture_pts=0;
 
 void setupRingbuffer() {
     for(int i=0;i<elementof(g_picture_ring);i++) {
@@ -99,6 +100,7 @@ static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext,
                   );
 #endif
             if(g_first_picture_received_at==0) g_first_picture_received_at=now();
+            g_latest_picture_pts = (int)pFrame->pts;
 
             unsigned char *ydata=pFrame->data[0];
             unsigned char *udata=pFrame->data[1];
@@ -113,15 +115,6 @@ static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext,
             int h=pFrame->height;
             int g_frame_num=pCodecContext->frame_number;
 
-#if 0            
-            //            static unsigned char outbuf[g_scrw*g_scrh*3];
-            unsigned char *outptrs[1]= { g_picture_data };
-            int outlinesizes[1] = { g_scrw*4 };
-
-            int swsret=sws_scale(g_swsctx, pFrame->data, pFrame->linesize, 0, pFrame->height, outptrs, outlinesizes );
-            if(swsret<=0) print("swsret:%d",swsret);
-#endif
-
             int di=g_picture_head % elementof(g_picture_ring);
             unsigned char *outptrs[1]= { (unsigned char*)g_picture_ring[di].data };
             int outlinesizes[1] = { g_scrw*4 };
@@ -129,28 +122,10 @@ static int decode_video_packet(AVPacket *pPacket, AVCodecContext *pCodecContext,
             int swsret=sws_scale(g_swsctx, pFrame->data, pFrame->linesize, 0, pFrame->height, outptrs, outlinesizes );
             if(swsret<=0) print("swsret:%d",swsret);
 
-
+            g_picture_ring[di].pts = (int)pFrame->pts;
+            g_picture_ring[di].szb = g_scrw * g_scrh * 4;
             g_picture_head++;
             
-            //                        print("LSZ:%d %d %d w:%d h:%d", ylinesize, ulinesize, vlinesize, w, h);
-#if 0            
-            if(h>g_scrh)h=g_scrh;
-            if(w>g_scrw)w=g_scrw;
-
-            size_t copysz = w*h*1;
-            for(int y=0;y<h;y++) {
-                for(int x=0;x<w;x++) {
-                    int ind = (x+y*w)*4;
-                    //                    g_picture_data[ind]=ydata[x+y*ylinesize];
-                    //                    g_picture_data[ind+1]=ydata[x+y*ylinesize];
-                    //                    g_picture_data[ind+2]=ydata[x+y*ylinesize];
-                    g_picture_data[ind+0]=outbuf[(x+y*g_scrw)*3];
-                    g_picture_data[ind+1]=outbuf[(x+y*g_scrw)*3+1];
-                    g_picture_data[ind+2]=outbuf[(x+y*g_scrw)*3+2];
-                    g_picture_data[ind+3]=0xff;
-                }
-            }
-#endif            
         }
     }
     return 0;
@@ -209,7 +184,7 @@ static int decode_audio_packet(AVPacket *pPacket, AVCodecContext *aCodecContext,
             for(int i=0;i<samplenum;i++) {
                 float left_level=((float*)pFrame->data[0])[i]; // TODO: stereo
                 int amp=3;
-                float *outptr = (float*)g_sample_ring[si].data;
+                int16_t *outptr = (int16_t*)g_sample_ring[si].data;
                 outptr[i]=left_level * 30000 * amp;
                 //                g_pcmdata[buf_ind][i]=(i%50)*100;
             }
@@ -287,7 +262,7 @@ void *receiveRTMPThreadFunc(void *urlarg) {
 
     /////
     g_swsctx=sws_getContext( g_scrw, g_scrh, AV_PIX_FMT_YUV420P,
-                             g_scrw, g_scrh, AV_PIX_FMT_RGB32,
+                             g_scrw, g_scrh, AV_PIX_FMT_BGR32,
                              SWS_BICUBIC,
                              NULL,NULL,NULL);
     if(!g_swsctx) {
@@ -413,10 +388,30 @@ void *receiveRTMPThreadFunc(void *urlarg) {
             double nt=now();
             double elt=nt-g_first_picture_received_at;
             int pts = (int)(elt *1000);
-            print("elt:%f pts:%d",elt,pts);
+            int play_pts = pts;
+            if( play_pts < g_latest_picture_pts - 1000) play_pts = g_latest_picture_pts-1000; //
+
+            // headから反対方向にスキャンして、play_ptsより古いのがあったら、そのデータを描画またはalbufferに積んで消す(pts=0)
+
+            print("elt:%f timer-pts:%d stream-pts:%d play_pts:%d",elt,pts, g_latest_picture_pts, play_pts);
+            
+            // video
+            for(int invi=0;invi<elementof(g_picture_ring);invi++) {
+                int logical_ind = g_picture_head - invi;
+                if(logical_ind<0)continue;
+                int ind = logical_ind % elementof(g_picture_ring);
+                DecodedData *ddp=&g_picture_ring[ind];
+                //                print("logical_ind:%d ind:%d pts:%d",logical_ind,ind,ddp->pts);
+                if(ddp->pts==0)continue;
+                if( ddp->pts < play_pts ) {
+                    print("vid ind:%d ddp->pts:%d play_pts:%d",ind, ddp->pts, play_pts);
+                    ddp->pts=0;
+
+                    memcpy( g_picture_data, ddp->data, ddp->szb);
+                }
+            }
         }
     }
-    
 
 
     fprintf(stderr,"releasing all the resources\n");
