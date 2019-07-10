@@ -249,6 +249,19 @@ void *receiveRTMPThreadFunc(void *urlarg) {
     print("receiveRTMPThreadFunc: url:'%s'",url);
     av_register_all();
     avformat_network_init();
+
+    /// listing codecs
+    {
+        AVCodec * codec=0;
+        while( (codec = av_codec_next(codec)) ){
+            // try to get an encoder from the system
+            AVCodec *encoder = avcodec_find_encoder(codec->id);
+            if (encoder){
+                print("[%d] name:%s ln:%s type:%d ", encoder->id, encoder->name, encoder->long_name, encoder->type);
+            }
+        }
+    }
+
     
     AVFormatContext *pFormatContext = avformat_alloc_context();
     fprintf(stderr,"avformat_alloc_context: ret: %p\n",pFormatContext);
@@ -312,7 +325,7 @@ void *receiveRTMPThreadFunc(void *urlarg) {
         fprintf(stderr,"AVStream->r_frame_rate before open coded %d/%d\n", pFormatContext->streams[i]->r_frame_rate.num, pFormatContext->streams[i]->r_frame_rate.den);
         fprintf(stderr,"AVStream->start_time %" PRId64 "\n", pFormatContext->streams[i]->start_time);
         fprintf(stderr,"AVStream->duration %" PRId64 "\n", pFormatContext->streams[i]->duration);
-        fprintf(stderr,"finding the proper decoder (CODEC)\n");
+        fprintf(stderr,"finding the proper decoder (CODEC) codec_id:%d\n", pLocalCodecParameters->codec_id);
         AVCodec *pLocalCodec = NULL;
         pLocalCodec = avcodec_find_decoder(pLocalCodecParameters->codec_id);
         if(!pLocalCodec) {
